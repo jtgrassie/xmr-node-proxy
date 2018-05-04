@@ -33,7 +33,8 @@
     "request": "^2.79.0",
     "request-json": "0.6.1",
     "sprintf-js": "^1.0.3",
-    "uuid": "3.0.1"
+    "uuid": "3.0.1",
+    "ws": "^5.1.1"
   },
   "optionalDependencies": {
     "cryptonote-util": "git://github.com/Snipa22/node-cryptonote-util.git#xmr-Nan-2.0",

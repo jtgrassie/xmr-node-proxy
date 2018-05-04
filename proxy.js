@@ -3,6 +3,9 @@ const cluster = require('cluster');
 const net = require('net');
 const tls = require('tls');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
+const WebSocket = require('ws');
 const async = require('async');
 const uuidV4 = require('uuid/v4');
 const support = require('./lib/support.js')();
@@ -789,7 +792,7 @@ function Miner(id, params, ip, pushMessage, portData, minerSocket) {
     this.cachedJob = null;
 
     this.minerStats = function(){
-        if (this.socket.destroyed){
+        if (this.socket.readyState > 1){
             delete activeMiners[this.id];
             return;
         }
@@ -962,7 +965,7 @@ function activatePorts() {
         if (activePorts.indexOf(portData.port) !== -1) {
             return;
         }
-        let handleMessage = function (socket, jsonData, pushMessage, minerSocket) {
+        let handleMessage = function (ws, jsonData, pushMessage, ip) {
             if (!jsonData.id) {
                 console.warn('Miner RPC request missing RPC id');
                 return;
@@ -977,7 +980,7 @@ function activatePorts() {
             }
 
             let sendReply = function (error, result) {
-                if (!socket.writable) {
+                if (ws.readyState != 1) {
                     return;
                 }
                 let sendData = JSON.stringify({
@@ -987,19 +990,17 @@ function activatePorts() {
                         result: result
                     }) + "\n";
                 debug.miners(`Data sent to miner (sendReply): ${sendData}`);
-                socket.write(sendData);
+                ws.send(sendData);
             };
-            handleMinerData(jsonData.method, jsonData.params, socket.remoteAddress, portData, sendReply, pushMessage, minerSocket);
-            };
+            handleMinerData(jsonData.method, jsonData.params, ip, portData, sendReply, pushMessage, ws);
+        };
 
-        function socketConn(socket) {
-            socket.setKeepAlive(true);
-            socket.setEncoding('utf8');
+        function socketConn(ws, req) {
 
-            let dataBuffer = '';
+            const ip = req.connection.remoteAddress;
 
             let pushMessage = function (method, params) {
-                if (!socket.writable) {
+                if (ws.readyState != 1) {
                     return;
                 }
                 let sendData = JSON.stringify({
@@ -1008,86 +1009,49 @@ function activatePorts() {
                         params: params
                     }) + "\n";
                 debug.miners(`Data sent to miner (pushMessage): ${sendData}`);
-                socket.write(sendData);
+                ws.send(sendData);
             };
 
-            socket.on('data', function (d) {
-                dataBuffer += d;
-                if (Buffer.byteLength(dataBuffer, 'utf8') > 102400) { //10KB
-                    dataBuffer = null;
-                    console.warn(global.threadName + 'Excessive packet size from: ' + socket.remoteAddress);
-                    socket.destroy();
+            ws.on('message', function (data) {
+                if (Buffer.byteLength(data, 'utf8') > 102400) { //10KB
+                    data = null;
+                    console.warn(global.threadName + 'Excessive packet size from: ' + ip);
+                    ws.close();
                     return;
                 }
-                if (dataBuffer.indexOf('\n') !== -1) {
-                    let messages = dataBuffer.split('\n');
-                    let incomplete = dataBuffer.slice(-1) === '\n' ? '' : messages.pop();
-                    for (let i = 0; i < messages.length; i++) {
-                        let message = messages[i];
-                        if (message.trim() === '') {
-                            continue;
-                        }
-                        let jsonData;
-                        debug.miners(`Data from miner: ${message}`);
-                        try {
-                            jsonData = JSON.parse(message);
-                        }
-                        catch (e) {
-                            if (message.indexOf('GET /') === 0) {
-                                if (message.indexOf('HTTP/1.1') !== -1) {
-                                    socket.end('HTTP/1.1' + httpResponse);
-                                    break;
-                                }
-                                else if (message.indexOf('HTTP/1.0') !== -1) {
-                                    socket.end('HTTP/1.0' + httpResponse);
-                                    break;
-                                }
-                            }
-                            console.warn(global.threadName + "Malformed message from " + socket.remoteAddress + " Message: " + message);
-                            socket.destroy();
-                            break;
-                        }
-                        handleMessage(socket, jsonData, pushMessage, socket);
-                    }
-                    dataBuffer = incomplete;
+                let jsonData;
+                debug.miners(`Data from miner: ${data}`);
+                try {
+                    jsonData = JSON.parse(data);
                 }
+                catch (e) {
+                    console.warn(global.threadName + "Malformed message from " + ip + " Message: " + data);
+                    break;
+                }
+                handleMessage(ws, jsonData, pushMessage, ip);
             }).on('error', function (err) {
-                if (err.code !== 'ECONNRESET') {
-                    console.warn(global.threadName + "Socket Error from " + socket.remoteAddress + " " + err);
-                }
-                socket.end();
-                socket.destroy();
+                console.warn(global.threadName + "WebSocket Error from " + ip + " " + err);
             }).on('close', function () {
                 pushMessage = function () {
                 };
                 debug.miners('Miner disconnected via standard close');
-                socket.end();
-                socket.destroy();
             });
         }
-
+        
+        let server;
         if ('ssl' in portData && portData.ssl === true) {
-            tls.createServer({
+            server = new https.createServer({
                 key: fs.readFileSync('cert.key'),
                 cert: fs.readFileSync('cert.pem')
-            }, socketConn).listen(portData.port, global.config.bindAddress, function (error) {
-                if (error) {
-                    console.error(global.threadName + "Unable to start server on: " + portData.port + " Message: " + error);
-                    return;
-                }
-                activePorts.push(portData.port);
-                console.log(global.threadName + "Started server on port: " + portData.port);
             });
         } else {
-            net.createServer(socketConn).listen(portData.port, global.config.bindAddress, function (error) {
-                if (error) {
-                    console.error(global.threadName + "Unable to start server on: " + portData.port + " Message: " + error);
-                    return;
-                }
-                activePorts.push(portData.port);
-                console.log(global.threadName + "Started server on port: " + portData.port);
-            });
+            server = http.createServer();
         }
+        const wss = new WebSocket.Server({ server });
+        server.listen({ port:portData.port, host:global.config.bindAddress}, () => {
+            activePorts.push(portData.port);
+        });
+        wss.on('connection', socketConn);
     });
 }
 
