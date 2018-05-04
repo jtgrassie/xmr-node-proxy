@@ -1026,7 +1026,7 @@ function activatePorts() {
                 }
                 catch (e) {
                     console.warn(global.threadName + "Malformed message from " + ip + " Message: " + data);
-                    break;
+                    return;
                 }
                 handleMessage(ws, jsonData, pushMessage, ip);
             }).on('error', function (err) {
