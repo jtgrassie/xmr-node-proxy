@@ -1,6 +1,6 @@
 # xmr-node-proxy
 
-A WebSocket based port of Snipa's **xmr-node-proxy**
+A WebSocket based port of Snipa's **xmr-node-proxy**. See the companion project [xmr-wasm](https://github.com/jtgrassie/xmr-wasm) for an implementation of a browser based miner that can use this proxy.
 
 ## Setup Instructions
 
